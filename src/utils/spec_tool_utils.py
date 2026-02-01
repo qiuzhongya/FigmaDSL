@@ -48,7 +48,7 @@ def parse_figma_file(node_id: str, figma_token: str, figma_file_key: str):
     response = requests.get(url, headers=headers)
     if response.status_code == 429:
         retry_after = int(response.headers.get("Retry-After", 60))
-        print(f"Rate limited (429) on {url} -> retry_after={retry_after}")
+        tlogger().info(f"Rate limited (429) on {url} -> retry_after={retry_after}")
         raise Exception(f"Figma Api rate limited (429) on {url} -> retry_after={retry_after}")
     if not response.ok:
         tlogger().info("parse figma file failed: ", response.text)

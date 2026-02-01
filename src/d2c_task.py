@@ -40,7 +40,7 @@ def d2c_exec_task(task_id: str, figma_url: str, figma_token: str):
                          f"git user name: {git_user_info['user_name']},"
                          f"Git user email: {git_user_info['user_email']}")
         state = {
-            "task_id": task_id,
+            "task_id": str(task_id),
             "figma_url": figma_url,
             "figma_token": figma_token
         }
