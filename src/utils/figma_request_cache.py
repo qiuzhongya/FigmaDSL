@@ -55,6 +55,12 @@ def read_image_json_cache(file_key: str,
         if all(n in images for n in needed_nodes):
             tlogger().info(f"read image download link cache for figma key {file_key}")
             return images
+        else:
+            hit = {n: images[n] for n in needed_nodes if n in images}
+            if not hit:                # 一个都没命中
+                return None
+            tlogger().info(f"partial hit: {len(hit)}/{len(needed_nodes)} images for {file_key}")
+            return hit
     except Exception:
         pass
     return None

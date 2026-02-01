@@ -89,6 +89,13 @@ def read_component_knowledge():
 
 def is_valid_compose_code(compose_code: str) -> bool:
     """ensure the generatedcompose code is not empty and valid"""
+    tlogger().info(f"valid compose code check length: {len(compose_code)}, required length: {d2c_config.MINValidComposeCodeLength}")
+    return len(compose_code) > d2c_config.MINValidComposeCodeLength
+
+def is_valid_compose_merge_code(compose_code: str) -> bool:
+    """ensure the generatedcompose code is not empty and valid"""
+    tlogger().info(f"valid compose code check length: {len(compose_code)}, required length: {d2c_config.MINValidComposeCodeLength}")
+    tlogger().info(f"valid compose code check @Preview: {'@Preview' in compose_code}")
     return len(compose_code) > d2c_config.MINValidComposeCodeLength and "@Preview" in compose_code
 
 def clean_generated_code(compose_code: str) -> str:
@@ -284,3 +291,31 @@ def download_and_save_icon(save_path: str, image_url: str, max_retries: int = 3)
             delay = retry_delays[retry]
             tlogger().warning(f"Attempt {retry + 1} failed, retry after {delay}s. image_url: {image_url}, error: {str(e)}")
             time.sleep(delay)
+
+def build_coder_tree(figma_json: dict):
+    root_node = deepcopy(figma_json)
+    def walk(node):
+        coder_tree = {}
+        LAYOUT_KEYS = ["id", "name", "type", "componentId", 
+                       "absoluteBoundingBox", "layoutMode", "primaryAxisAlignItems", "counterAxisAlignItems", "constraints", 
+                       "layoutGrow", "layoutAlign", "paddingTop", "paddingLeft", "paddingRight", "paddingBottom",
+                       "layoutSizingVertical", "layoutSizingHorizontal", "clipsContent"]
+        coder_tree.update({k: node[k] for k in LAYOUT_KEYS if k in node})
+        coder_tree["children"] = []
+        children = node.get("children", [])
+        for child in children:
+            sub_coder_tree = walk(child)
+            coder_tree["children"].append(sub_coder_tree)
+        return coder_tree
+    coder_tree = walk(root_node)
+    return coder_tree
+
+def update_coder_tree(figma_node: dict, update_node_id: str, coder_content: str):
+    node_id = figma_node.get("id")
+    if node_id == update_node_id:
+        figma_node["code_content"] = coder_content
+        return True
+    for child in figma_node.get("children", []):
+        if update_coder_tree(child, update_node_id, coder_content):
+            return True
+    return False

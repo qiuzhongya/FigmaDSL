@@ -52,17 +52,17 @@ SNOW_CONFIG = {
 }
 
 # config for coder retry
-MAXCoderRetry = 6
+MAXCoderRetry = 10
 
 # config for valid compose code length
-MINValidComposeCodeLength = 700
+MINValidComposeCodeLength = 200
 
 # config for recursion limit
-RecursionLimit = 60
+RecursionLimit = 6000
 
 # config for evaluate threshold
 EvaluateThreshold = 0.0
-
+SegmentationNodeThreshold = 20
 OUTPUT_DIR="/tmp/d2c_task_output"
 
 # Whether to enable Figma request caching.

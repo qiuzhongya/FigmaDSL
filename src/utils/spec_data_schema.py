@@ -55,3 +55,7 @@ class AgentState(TypedDict):
     figma_screenshot: str
     runtime_screenshot: str
     evaluate_result: Optional[dict]
+    coder_tree: dict = Field(default_factory=dict, description="figma simple structure and code")
+    sub_figma_id: Optional[str]
+    merge_success: Optional[bool]
+    sub_figma_list: dict = Field(default_factory=dict, description="sub figma figma")

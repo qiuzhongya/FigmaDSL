@@ -221,9 +221,12 @@ def recognize_components(state: AgentState):
     """
     tlogger().info("--- RECOGNIZING COMPONENTS ---")
     d2c_datautil.update_task_stage(state["task_id"], "recognize_components")
-    figma_json_str = json.dumps(state["figma_json"], indent=4, ensure_ascii=False)
+    coder_tree = d2c_utils.build_coder_tree(state["figma_json"].get("document", {}))
+    sub_figma_list = d2c_utils.split_tree(state["figma_json"].get("document", {}))
     component_list = list()
-    return {"components": component_list}
+    tlogger().info(f"Recognized components: {component_list}")
+
+    return {"components": component_list, "coder_tree": coder_tree, "sub_figma_list": sub_figma_list}
     system_prompt = f'''
 You are an expert UI designer and developer.
 Analyze the following Figma JSON and identify all the components from the provided list that are used in the design.
@@ -279,7 +282,12 @@ def coder(state: AgentState):
         knowledges.append(f"## {component}\n```json\n{knowledge_text}\n```")
     component_knowledge_prompt = "\n".join(knowledges)
     system_prompt = llm_prompts.get_coder_system_prompt(component_knowledge_prompt)
-    user_prompt = llm_prompts.get_coder_user_prompt(json.dumps(state["figma_json"], indent=4, ensure_ascii=False))
+    sub_figma_id, sub_figma = next(iter(state["sub_figma_list"].items()))
+    if sub_figma is None:
+        tlogger().info("coder over!")
+        return {"sub_figma_id": None, "current_node_name": "coder"}
+    tlogger().info(f"sub_figma_id: {sub_figma_id}, remain sub figma: {state['sub_figma_list'].keys()}")
+    user_prompt = llm_prompts.get_coder_user_prompt(json.dumps(sub_figma, indent=4, ensure_ascii=False))
     exported_icons_prompt = ""
     if "icon_list" in state and state["icon_list"]:
         exported_icons_prompt += "The resource files in the app/src/main/res/drawable-xxhdpi directory are:\n"
@@ -313,7 +321,53 @@ def coder(state: AgentState):
         generated_compose_code = generated_compose_code[idx:]
     with open(os.path.join(workspace_dir, "app/src/main/java/com/example/myapplication/Greeting.kt"), "w") as f:
         f.write(generated_compose_code)
-    return {"coder_compose_code": generated_compose_code, "latest_compose_code": generated_compose_code, "current_node_name": "coder"}
+    return {"sub_figma_id": sub_figma_id, "current_node_name": "coder"}
+
+# Step 7: Coder
+def merge_coder(state: AgentState):
+    """
+    Generates or fixes compose ui code.
+    """
+    tlogger().info("--- MERGE CODING ---")
+    d2c_datautil.update_task_stage(state["task_id"], "merge_coder")
+    workspace_dir = state["workspace_directory"]
+    system_prompt = llm_prompts.get_merge_coder_system_prompt()
+    user_prompt = llm_prompts.get_coder_user_prompt(json.dumps(state["coder_tree"], indent=4, ensure_ascii=False))
+    with open(os.path.join(workspace_dir, "coder_tree.json"), "w", encoding="utf-8") as f:
+        json.dump(state["coder_tree"], f, ensure_ascii=False, indent=2)
+    exported_icons_prompt = ""
+    if "icon_list" in state and state["icon_list"]:
+        exported_icons_prompt += "The resource files in the app/src/main/res/drawable-xxhdpi directory are:\n"
+        for icon in state["icon_list"]:
+            exported_icons_prompt += f"- {icon}\n"
+        user_prompt += "\n# Icon List\n" + exported_icons_prompt
+    tlogger().info("merge code start")
+    llm_without_tools = model.bind_tools([])
+    chain = llm_without_tools.with_structured_output(CoderOutput, method="function_calling")
+    messages = [
+        ("system", system_prompt),
+        ("user", user_prompt)
+    ]
+    for retry_time in range(d2c_config.MAXCoderRetry * 2):
+        coder_output = llm_tools.safe_call_llm(chain, messages)
+        # ensure the compose code is not empty and valid
+        if coder_output and coder_output.compose_code and d2c_utils.is_valid_compose_merge_code(coder_output.compose_code.strip()):
+            tlogger().info(f"generate code as follows: \n{coder_output.compose_code}")
+            break
+        else:
+            tlogger().info(f"generate code failed, retry {retry_time + 1} times, output content: {coder_output}")
+    else:
+        tlogger().info(f"generate code failed, retry {d2c_config.MAXCoderRetry} times, output is empty")
+        raise Exception("coder output is empty, please retry later")
+    # clean the compose code format to avoid the code is not valid for kotlin file
+    generated_compose_code = d2c_utils.clean_generated_code(coder_output.compose_code.strip())
+    idx = generated_compose_code.find(d2c_config.Package_Declaration)
+    if idx > 0:
+        tlogger().info(f"remove from {idx} extra code : {generated_compose_code[:idx]}")
+        generated_compose_code = generated_compose_code[idx:]
+    with open(os.path.join(workspace_dir, "app/src/main/java/com/example/myapplication/Greeting.kt"), "w") as f:
+        f.write(generated_compose_code)
+    return {"coder_compose_code": generated_compose_code, "latest_compose_code": generated_compose_code, "merge_success": True, "current_node_name": "merge_coder"}
 
 
 def bugfix(state: AgentState):
@@ -392,8 +446,20 @@ def compiler(state: AgentState):
     d2c_datautil.update_task_stage(state["task_id"], "compiler")
     workspace_dir = state["workspace_directory"]
     success, error_message = d2c_utils.compile(workspace_dir)
+    if success:
+        compose_code = llm_tools.read_file.invoke({"abs_path": os.path.join(state["workspace_directory"], "app/src/main/java/com/example/myapplication/Greeting.kt")})
+        if d2c_utils.is_valid_compose_code(compose_code.strip()):
+            if state["sub_figma_id"] and len(state["sub_figma_list"]) > 0:
+                d2c_utils.update_coder_tree(state["coder_tree"], state["sub_figma_id"], compose_code)
+                sub_figma_id = state["sub_figma_id"]
+                sub_figma = state["sub_figma_list"][sub_figma_id]
+                os.makedirs(f"{workspace_dir}/tmp_code/", exist_ok=True)
+                with open(os.path.join(workspace_dir, f"tmp_code/{sub_figma_id}.json"), "w", encoding="utf-8") as f:
+                    json.dump(sub_figma, f, ensure_ascii=False, indent=2)
+                with open(os.path.join(workspace_dir, f"tmp_code/{sub_figma_id}.code_log"), "w") as f:
+                    f.write(compose_code)
+                state["sub_figma_list"].pop(state["sub_figma_id"], None)
     return {"compile_success": success, "compile_error": error_message, "current_node_name": "compiler"}
-
 
 # Step 10: Previewer
 def previewer(state: AgentState):
@@ -532,9 +598,19 @@ def compiler_status_checker(state: AgentState):
         # check the compose code is valid
         compose_code = llm_tools.read_file.invoke({"abs_path": os.path.join(state["workspace_directory"], "app/src/main/java/com/example/myapplication/Greeting.kt")})
         if d2c_utils.is_valid_compose_code(compose_code.strip()):
-            return "previewer"
+            if len(state["sub_figma_list"]) > 0:
+                    return "coder"
+            else:
+                if state.get("merge_success", False):
+                    tlogger().info("start previewer")
+                    return "previewer"
+                else:
+                    return "merge_coder"
         else:
-            return "coder"
+            if len(state["sub_figma_list"]) > 0:
+                return "coder"
+            else:
+                return "merge_coder"    
     else:
         return "bugfix"
 
@@ -574,6 +650,7 @@ def create_workflow():
     workflow.add_node("recognize_components", recognize_components)
     workflow.add_node("get_component_knowledges", get_component_knowledges)
     workflow.add_node("coder", coder)
+    workflow.add_node("merge_coder", merge_coder)
     workflow.add_node("replace_tester", replace_tester)
     workflow.add_node("compiler", compiler)
     workflow.add_node("remove_useless_icons", remove_useless_icons)
@@ -592,8 +669,9 @@ def create_workflow():
     workflow.add_edge("export_figma_screenshot", "recognize_components")
     workflow.add_edge("recognize_components", "get_component_knowledges")
     workflow.add_edge("get_component_knowledges", "coder")
-    workflow.add_edge("coder", "replace_tester")
-    workflow.add_edge("replace_tester", "compiler")
+    workflow.add_edge("coder", "compiler")
+    workflow.add_edge("merge_coder", "compiler")
+    #workflow.add_edge("replace_tester", "compiler")
     workflow.add_edge("bugfix", "compiler")
 
     workflow.add_conditional_edges(
@@ -605,8 +683,7 @@ def create_workflow():
         previewer_status_checker,
     )
     
-    workflow.add_edge("remove_useless_icons", "evaluator")
-
+    workflow.add_edge("remove_useless_icons", "compress_upload")
     workflow.add_conditional_edges(
         "evaluator",
         evaluator_status_checker,
