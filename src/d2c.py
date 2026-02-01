@@ -273,13 +273,17 @@ def coder(state: AgentState):
     tlogger().info("--- CODING ---")
     d2c_datautil.update_task_stage(state["task_id"], "coder")
     workspace_dir = state["workspace_directory"]
+    purge_figma_json = state["figma_json"]
+    purge_figma_json = d2c_utils.purge_figma_size(state["figma_json"])
+    with open(os.path.join(workspace_dir, "simple_tree.json"), "w", encoding="utf-8") as f:
+        json.dump(purge_figma_json, f, ensure_ascii=False, indent=2)
     knowledges = []
     for component, knowledge_json in state["comp_knowledges"].items():
         knowledge_text = json.dumps(knowledge_json, indent=4, ensure_ascii=False)
         knowledges.append(f"## {component}\n```json\n{knowledge_text}\n```")
     component_knowledge_prompt = "\n".join(knowledges)
     system_prompt = llm_prompts.get_coder_system_prompt(component_knowledge_prompt)
-    user_prompt = llm_prompts.get_coder_user_prompt(json.dumps(state["figma_json"], indent=4, ensure_ascii=False))
+    user_prompt = llm_prompts.get_coder_user_prompt(json.dumps(purge_figma_json, indent=4, ensure_ascii=False))
     exported_icons_prompt = ""
     if "icon_list" in state and state["icon_list"]:
         exported_icons_prompt += "The resource files in the app/src/main/res/drawable-xxhdpi directory are:\n"

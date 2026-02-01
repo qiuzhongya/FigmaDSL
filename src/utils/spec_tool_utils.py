@@ -284,3 +284,32 @@ def download_and_save_icon(save_path: str, image_url: str, max_retries: int = 3)
             delay = retry_delays[retry]
             tlogger().warning(f"Attempt {retry + 1} failed, retry after {delay}s. image_url: {image_url}, error: {str(e)}")
             time.sleep(delay)
+            
+def purge_figma_size(figma_json: dict) -> dict:
+    """把 Figma JSON 里所有图层信息清空，只保留骨架。"""
+    LAYOUT_KEYS = ["componentId", "absoluteBoundingBox", "layoutMode", "primaryAxisAlignItems", "counterAxisAlignItems",
+                       "constraints", "layoutGrow", "layoutAlign", "paddingTop", "paddingLeft", "paddingRight", "paddingBottom",
+                       "layoutSizingVertical", "layoutSizingHorizontal", "clipsContent", "id", "name", "type",  "children"]
+    doc = deepcopy(figma_json.get("document", {}))
+    abb = doc.get("absoluteBoundingBox", {})
+    view_width, view_height  = int(abb.get("width")), int(abb.get("height"))
+    view_size = view_width * view_height
+    split_size = view_size / 20
+    def clear_size(node: dict | None) -> dict | None:
+        if not node:                       # 防御空节点
+            return None
+        if "children" in node and node["children"]:
+             node["children"] = [cleared for child in node["children"] if (cleared := clear_size(child)) is not None]
+        node_abb = node.get("absoluteBoundingBox") or {}
+        node_width, node_height= int(node_abb.get("width", 0)), int(node_abb.get("height", 0))
+        node_size = node_width * node_height   # 现在仅计算，不再用于过滤
+        if node_size < split_size and view_width > node_width and view_height > node_height:
+            new_node = {}
+            new_node.update({k: node[k] for k in LAYOUT_KEYS if k in node})
+            if not new_node:
+                tlogger().info(f"empty node: {node.get('id', '')}")
+                return None
+            return new_node
+        return node
+    figma_json["document"] = clear_size(doc)
+    return figma_json
