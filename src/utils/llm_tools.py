@@ -37,20 +37,21 @@ def export_figma_icon(figma_nodes: Dict[str, str],
         saved_paths.add(f"app/src/main/res/drawable-xxhdpi/{filepath}")
         download_tasks[image_url] = save_path
 
-    
-    max_download_workers = min(5, len(download_tasks))  # 控制并发数，避免触发Figma API限流
-    retry_pool = RetryPool(max_workers=max_download_workers)
-    future_download_task = {}
-    for image_url, save_image_path in download_tasks.items():
-        download_task = retry_pool.submit(download_and_save_icon, save_image_path, image_url)
-        future_download_task[download_task] = [image_url, save_image_path]
+    if len(download_tasks) > 0:
+        max_download_workers = min(30, len(download_tasks))  # 控制并发数，避免触发Figma API限流
+        retry_pool = RetryPool(max_workers=max_download_workers)
+        future_download_task = {}
+        for image_url, save_image_path in download_tasks.items():
+            download_task = retry_pool.submit(download_and_save_icon, save_image_path, image_url)
+            future_download_task[download_task] = [image_url, save_image_path]
 
-    for future_task in future_download_task:
-        if not future_task.result():
-            download_image_url = future_download_task[future_task][0]
-            save_local_path = future_download_task[future_task][1]
-            tlogger().info(f"down load from: {download_image_url}, save in: {save_local_path} failed")
-    tlogger().info(f"down load icon over!!!")
+        for future_task in future_download_task:
+            if not future_task.result():
+                download_image_url = future_download_task[future_task][0]
+                save_local_path = future_download_task[future_task][1]
+                tlogger().info(f"down load from: {download_image_url}, save in: {save_local_path} failed")
+        tlogger().info(f"down load icon over!!!")
+        retry_pool.shutdown()
     return saved_paths
 
 

@@ -87,6 +87,10 @@ def read_component_knowledge():
     with open("resources/component_knowledge.json", "r") as f:
         return json.load(f)
 
+def is_valid_sub_compose_code(compose_code: str) -> bool:
+    """ensure the generatedcompose code is not empty and valid"""
+    return len(compose_code) > d2c_config.MINValidComposeCodeLength
+
 def is_valid_compose_code(compose_code: str) -> bool:
     """ensure the generatedcompose code is not empty and valid"""
     return len(compose_code) > d2c_config.MINValidComposeCodeLength and "@Preview" in compose_code

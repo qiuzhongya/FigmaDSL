@@ -11,15 +11,19 @@ from langgraph.graph import StateGraph, START, END
 import time
 from langgraph.prebuilt import create_react_agent
 from llm import init_gemini_chat
-from d2c_logger import tlogger
+from d2c_logger import tlogger, log_duration
 from utils.tos_manager import upload_zip_to_tos
 import d2c_datautil
 import d2c_config
 from utils import llm_prompts, llm_tools
 from utils.spec_data_schema import AgentState, ExportIcons, RecognizedComponents, CoderOutput, EvaluateResult
 import utils.spec_tool_utils as d2c_utils
+import utils.dsl_tools as dsl_utils
+import utils.coder_tools as coder_utils
+import utils.figma_tools as figma_utils
 from utils.container_tools import prepare_container
 from utils.retry_pool_tools import RetryPool
+
 
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +57,7 @@ def export_figma_json(state: AgentState):
     return {"figma_json": figma_json, "figma_file_key": figma_file_key, "figma_title": figma_title}
 
 # Step 2: Initialize Container
+@log_duration
 def init_container(state: AgentState):
     """
     Initializes the container environment.
@@ -126,6 +131,7 @@ def export_icon_block(state: AgentState):
 
 
 # Step 3: Export Figma Icons
+@log_duration
 def export_figma_icons(state: AgentState):
     """
     Exports figma icons.
@@ -135,7 +141,8 @@ def export_figma_icons(state: AgentState):
         state["icons_need_to_be_exported"] = []
     d2c_datautil.update_task_stage(state["task_id"], "export_figma_icons")
     sub_figma = d2c_utils.split_tree(state["figma_json"].get("document", {}))
-    retry_pool = state.get("retry_pool", RetryPool())
+    max_pool_count = min(len(sub_figma), 20)
+    retry_pool = RetryPool(max_workers=max_pool_count)
     future_tasks = []
     for node_id, node_json in sub_figma.items():
         tlogger().info(f"Recognize node {node_id}: type={node_json.get('type')}, name={node_json.get('name')}")
@@ -143,6 +150,7 @@ def export_figma_icons(state: AgentState):
         time.sleep(5)
     for f in future_tasks:
         state["icons_need_to_be_exported"].extend(f.result())
+    retry_pool.shutdown()
     builder_export = StateGraph(AgentState)
     builder_export.add_node("export_icon", export_icon_block)
     builder_export.add_edge(START, "export_icon")
@@ -266,45 +274,76 @@ def get_component_knowledges(state: AgentState):
     return {"comp_knowledges": comp_knowledges}
 
 # Step 7: Coder
+@log_duration
 def coder(state: AgentState):
     """
     Generates or fixes compose ui code.
     """
     tlogger().info("--- CODING ---")
     d2c_datautil.update_task_stage(state["task_id"], "coder")
+    icon_list = set()
+    if "icon_list" in state and state["icon_list"]:
+        icon_list = state["icon_list"]
+    coder_tree = dsl_utils.build_dsl_tree(state["figma_json"].get("document", {}))
+    sub_figma_list = figma_utils.split_figma_json_size(state["figma_json"].get("document", {}))
+    max_pool = min(len(sub_figma_list), 20)
+    retry_pool = RetryPool(max_workers=max_pool, max_retry=5)
+    coder_task_list = {}
     workspace_dir = state["workspace_directory"]
-    knowledges = []
-    for component, knowledge_json in state["comp_knowledges"].items():
-        knowledge_text = json.dumps(knowledge_json, indent=4, ensure_ascii=False)
-        knowledges.append(f"## {component}\n```json\n{knowledge_text}\n```")
-    component_knowledge_prompt = "\n".join(knowledges)
-    system_prompt = llm_prompts.get_coder_system_prompt(component_knowledge_prompt)
-    user_prompt = llm_prompts.get_coder_user_prompt(json.dumps(state["figma_json"], indent=4, ensure_ascii=False))
+    os.makedirs(f"{workspace_dir}/sub_figma", exist_ok=True)
+    for figma_id, sub_figma_json in sub_figma_list.items():
+        fut = retry_pool.submit(coder_utils.sub_figma_2_coder, sub_figma_json, icon_list)
+        coder_task_list[fut] = figma_id
+        time.sleep(5)
+        with open(os.path.join(workspace_dir, f"sub_figma/{figma_id}.json"), "w", encoding="utf-8") as f:
+            json.dump(sub_figma_json, f, ensure_ascii=False, indent=2)
+    for fut, figma_id in coder_task_list.items():
+        try:
+            code_content = fut.result()
+            dsl_utils.update_dsl_tree(coder_tree, figma_id, code_content)
+            with open(os.path.join(workspace_dir, f"sub_figma/{figma_id}.code"), "w") as f:
+                f.write(code_content)
+        except Exception as e:                   # 重试耗尽仍失败
+            tlogger().info(f"节点 {figma_id} 最终生成失败: {e}")
+    retry_pool.shutdown()
+    return {"coder_tree": coder_tree, "current_node_name": "coder"}
+
+@log_duration
+def merge_coder(state: AgentState):
+    """
+    Generates or fixes compose ui code.
+    """
+    tlogger().info("--- MERGE CODING ---")
+    d2c_datautil.update_task_stage(state["task_id"], "merge_coder")
+    workspace_dir = state["workspace_directory"]
+    system_prompt = llm_prompts.get_merge_coder_system_prompt()
+    user_prompt = llm_prompts.get_coder_user_prompt(json.dumps(state["coder_tree"], indent=4, ensure_ascii=False))
+    with open(os.path.join(workspace_dir, "dsl_tree.json"), "w", encoding="utf-8") as f:
+        json.dump(state["coder_tree"], f, ensure_ascii=False, indent=2)
     exported_icons_prompt = ""
     if "icon_list" in state and state["icon_list"]:
         exported_icons_prompt += "The resource files in the app/src/main/res/drawable-xxhdpi directory are:\n"
         for icon in state["icon_list"]:
             exported_icons_prompt += f"- {icon}\n"
         user_prompt += "\n# Icon List\n" + exported_icons_prompt
-    tlogger().info("generate code start")
+    tlogger().info("merge code start")
     llm_without_tools = model.bind_tools([])
     chain = llm_without_tools.with_structured_output(CoderOutput, method="function_calling")
     messages = [
         ("system", system_prompt),
         ("user", user_prompt)
     ]
-    for retry_time in range(d2c_config.MAXCoderRetry):
+    for retry_time in range(d2c_config.MAXCoderRetry * 4):
         coder_output = llm_tools.safe_call_llm(chain, messages)
         # ensure the compose code is not empty and valid
         if coder_output and coder_output.compose_code and d2c_utils.is_valid_compose_code(coder_output.compose_code.strip()):
             tlogger().info(f"generate code as follows: \n{coder_output.compose_code}")
             break
         else:
-            tlogger().info(f"generate code failed, retry {retry_time + 1} times")
+            tlogger().info(f"generate code failed, retry {retry_time + 1} times, output content: {coder_output}")
     else:
         tlogger().info(f"generate code failed, retry {d2c_config.MAXCoderRetry} times, output is empty")
         raise Exception("coder output is empty, please retry later")
-
     # clean the compose code format to avoid the code is not valid for kotlin file
     generated_compose_code = d2c_utils.clean_generated_code(coder_output.compose_code.strip())
     idx = generated_compose_code.find(d2c_config.Package_Declaration)
@@ -313,8 +352,7 @@ def coder(state: AgentState):
         generated_compose_code = generated_compose_code[idx:]
     with open(os.path.join(workspace_dir, "app/src/main/java/com/example/myapplication/Greeting.kt"), "w") as f:
         f.write(generated_compose_code)
-    return {"coder_compose_code": generated_compose_code, "latest_compose_code": generated_compose_code, "current_node_name": "coder"}
-
+    return {"coder_compose_code": generated_compose_code, "latest_compose_code": generated_compose_code, "merge_success": True, "current_node_name": "merge_coder"}
 
 def bugfix(state: AgentState):
     """
@@ -574,6 +612,7 @@ def create_workflow():
     workflow.add_node("recognize_components", recognize_components)
     workflow.add_node("get_component_knowledges", get_component_knowledges)
     workflow.add_node("coder", coder)
+    workflow.add_node("merge_coder", merge_coder)
     workflow.add_node("replace_tester", replace_tester)
     workflow.add_node("compiler", compiler)
     workflow.add_node("remove_useless_icons", remove_useless_icons)
@@ -592,7 +631,8 @@ def create_workflow():
     workflow.add_edge("export_figma_screenshot", "recognize_components")
     workflow.add_edge("recognize_components", "get_component_knowledges")
     workflow.add_edge("get_component_knowledges", "coder")
-    workflow.add_edge("coder", "replace_tester")
+    workflow.add_edge("coder", "merge_coder")
+    workflow.add_edge("merge_coder", "replace_tester")
     workflow.add_edge("replace_tester", "compiler")
     workflow.add_edge("bugfix", "compiler")
 

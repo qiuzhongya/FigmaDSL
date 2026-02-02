@@ -63,6 +63,8 @@ RecursionLimit = 60
 # config for evaluate threshold
 EvaluateThreshold = 0.0
 
+SegmentationNodeThreshold = 20
+
 OUTPUT_DIR="/tmp/d2c_task_output"
 
 # Whether to enable Figma request caching.

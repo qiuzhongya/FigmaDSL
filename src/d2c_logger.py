@@ -4,6 +4,7 @@ import os
 import threading
 import functools
 import d2c_config
+import time
 
 # 初始化线程本地存储（每个线程独立的数据空间）
 task_context = threading.local()
@@ -58,6 +59,6 @@ def log_duration(func):
         start = time.perf_counter()
         result = func(*args, **kwargs)
         elapsed = time.perf_counter() - start
-        tlogger().info(f"{func.__name__} 耗时: {elapsed:.3f}s")
+        tlogger().info(f"{func.__name__} stage 耗时: {elapsed:.3f}s")
         return result
     return wrapper
