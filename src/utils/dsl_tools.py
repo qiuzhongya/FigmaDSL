@@ -1,4 +1,3 @@
-import d2c_config
 from copy import deepcopy
 from d2c_logger import tlogger
 
@@ -30,3 +29,19 @@ def update_dsl_tree(dsl_tree: dict, update_node_id: str, coder_content: str):
         if update_dsl_tree(child, update_node_id, coder_content):
             return True
     return False
+
+def clear_dsl_tree(dsl_json: dict):
+    root_node = deepcopy(dsl_json)
+    def walk(node):
+        children = node.get("children", [])
+        for child in children:
+            code_exist = walk(child)
+            if code_exist:
+                return True
+        node["children"] = []
+        code_content = node.get("code_content", None)
+        if code_content:
+            return True
+        else:
+            return False
+    return walk(root_node)

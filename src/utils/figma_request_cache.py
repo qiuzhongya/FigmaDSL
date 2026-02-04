@@ -45,16 +45,26 @@ def image_json_cache_path(file_key: str) -> str:
 
 def read_image_json_cache(file_key: str,
                           needed_nodes: List[str]) -> Optional[Dict[str, str]]:
-    """返回 images 字段 dict；缓存必须包含所有 needed_nodes 才算命中"""
+    """
+    返回 needed_nodes 对应的 images 字段 dict；缓存必须包含所有 needed_nodes 且值不为 null 才算命中
+    """
     path = image_json_cache_path(file_key)
     if not os.path.isfile(path):
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             images: Dict[str, str] = json.load(f).get("images", {})
-        if all(n in images for n in needed_nodes):
-            tlogger().info(f"read image download link cache for figma key {file_key}")
-            return images
+
+        # 只提取 needed_nodes 中值不为 null 的条目
+        result = {}
+        for n in needed_nodes:
+            if n not in images:
+                return None  # 缺少某个节点，缓存未命中
+            if images[n] is None:
+                return None  # 值为 null，缓存未命中
+            result[n] = images[n]
+        tlogger().info(f"read image download link cache for figma key {file_key}, nodes: {len(result)}")
+        return result
     except Exception:
         pass
     return None

@@ -5,54 +5,16 @@ import base64
 import os
 import shutil
 import base64
-from typing import Dict, Type, Any
+from typing import Dict, List
 from d2c_logger import tlogger
-from utils.spec_tool_utils import fetch_image_links, get_safe_filename, get_unique_path, download_and_save_icon
-from utils.retry_pool_tools import RetryPool
+from utils.figma_tools import figma_resource_url
 
 @tool
-def export_figma_icon(figma_nodes: Dict[str, str],
-                      figma_file_key: str, figma_token: str, resource_directory: str) -> set:
+def export_figma_icon(figma_nodes: Dict[str, str], image_refs: List[str], figma_file_key: str,
+                      figma_token: str, resource_directory: str) -> dict:
     """通过 Figma API 导出 icon png 资源"""
-
-    # todo: 优化，加速，每个 figma 文件只导出一次
-    if not figma_file_key:
-        raise Exception("请设置 figma_file_key")
-    tlogger().info(f"export figma icons:f{figma_nodes.values()} ")
-    # 1. 获取图片下载链接
-    figma_node_ids = figma_nodes.keys()
-    image_links_map = fetch_image_links(figma_file_key, figma_node_ids, figma_token) 
-    
-    download_tasks = {}
-    saved_paths = set() 
-    for figma_node_id in figma_nodes.keys():
-        image_url = image_links_map.get(figma_node_id)
-        if not image_url:
-            tlogger().info(f"Get image url failed, node id: {figma_node_id}, icon_name: {figma_nodes[figma_node_id]}")
-            continue
-        filepath = get_unique_path(resource_directory, get_safe_filename(figma_nodes[figma_node_id]))
-        if not filepath.endswith(".png"):
-            filepath = figma_nodes[figma_node_id] + ".png"
-        save_path = os.path.join(resource_directory, filepath)
-        saved_paths.add(f"app/src/main/res/drawable-xxhdpi/{filepath}")
-        download_tasks[image_url] = save_path
-
-    if len(download_tasks) > 0:
-        max_download_workers = min(30, len(download_tasks))  # 控制并发数，避免触发Figma API限流
-        retry_pool = RetryPool(max_workers=max_download_workers)
-        future_download_task = {}
-        for image_url, save_image_path in download_tasks.items():
-            download_task = retry_pool.submit(download_and_save_icon, save_image_path, image_url)
-            future_download_task[download_task] = [image_url, save_image_path]
-
-        for future_task in future_download_task:
-            if not future_task.result():
-                download_image_url = future_download_task[future_task][0]
-                save_local_path = future_download_task[future_task][1]
-                tlogger().info(f"down load from: {download_image_url}, save in: {save_local_path} failed")
-        tlogger().info(f"down load icon over!!!")
-        retry_pool.shutdown()
-    return saved_paths
+    tlogger().info(f"image ref id: {image_refs}")
+    return figma_resource_url(figma_nodes, image_refs, figma_file_key, figma_token, resource_directory)
 
 
 @tool

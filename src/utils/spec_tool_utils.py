@@ -6,35 +6,9 @@ import re
 import time
 import d2c_config
 from d2c_logger import tlogger
-from typing import Dict, List, Any
-from utils.figma_request_cache import read_json_cache, write_json_cache, read_image_json_cache, write_image_json_cache
+from typing import Any
+from utils.figma_request_cache import read_json_cache, write_json_cache
 from copy import deepcopy
-
-
-def fetch_image_links(file_key: str,
-                      node_ids: List[str],
-                      token: str) -> Dict[str, str]:
-    if d2c_config.FIGMA_REQUEST_CACHE:
-        cached = read_image_json_cache(file_key, node_ids)
-        if cached is not None:
-           return cached
-    url = f"https://api.figma.com/v1/images/{file_key}"
-    params = {"ids": ",".join(node_ids), "format": "png", "scale": 3}
-    headers = {"X-Figma-Token": token}
-    resp = requests.get(url, headers=headers, params=params, timeout=30)
-
-    if resp.status_code == 429:
-        retry_after = int(resp.headers.get("Retry-After", 60))
-        tlogger().error(f"Rate limited (429) -> retry_after={retry_after}")
-        raise Exception(f"Figma API rate limited (429) -> retry_after={retry_after}")
-    if resp.status_code != 200:
-        tlogger().info(f"Get image urls failed, code={resp.status_code}, text={resp.text}")
-        return {}
-    images: Dict[str, str] = resp.json().get("images", {})
-    if d2c_config.FIGMA_REQUEST_CACHE:
-        write_image_json_cache(file_key, images)
-    return images
-
 
 def parse_figma_file(node_id: str, figma_token: str, figma_file_key: str):
     if d2c_config.FIGMA_REQUEST_CACHE:
@@ -69,18 +43,6 @@ def read_figma_json(figma_json: dict) -> list[dict]:
         tlogger().info("no children")
         raise Exception("no children found")
     return document["children"] # [1:], double check from the first or second child
-
-def get_image_node(figma_json: dict) -> dict:
-    refs = {}
-    def walk(node):
-        for fill in node.get("fills", []):
-            if fill.get("type") == "IMAGE" and "imageRef" in fill:
-                refs[node["id"]] = f"img_{fill['imageRef']}"
-                break
-        for child in node.get("children", []):
-            walk(child)
-    walk(figma_json)
-    return refs
 
 def read_component_knowledge():
     return {}
@@ -184,7 +146,7 @@ def get_unique_path(directory, base_name):
     while os.path.exists(os.path.join(directory, unique)):
         unique = f"{name}_{counter}{ext}"
         counter += 1
-    return os.path.join(directory, unique)
+    return unique
 
 def purge_figma(figma_json: Any) -> Any:
     document = figma_json.get("document", {})
@@ -251,7 +213,7 @@ def split_tree(figma_json: dict):
     return sub_figma_list
 
 
-def download_and_save_icon(save_path: str, image_url: str, max_retries: int = 3) -> str:
+def download_and_save_icon(save_path: str, image_url: str, max_retries: int = 3, task_id: int = 10000) -> str:
     # 指数退避延迟（每次重试延迟时间：0.5s → 1s → 2s）
     retry_delays = [0.5, 1, 2]
     
@@ -269,22 +231,22 @@ def download_and_save_icon(save_path: str, image_url: str, max_retries: int = 3)
                 f.write(img_resp.content)
             
             if retry > 0:
-                tlogger().info(f"Save image success after {retry} retries, save_path: {save_path}")
+                tlogger(task_id).info(f"Save image success after {retry} retries, save_path: {save_path}")
             else:
-                tlogger().info(f"Save image success, save_path: {save_path}")
+                tlogger(task_id).info(f"Save image success, save_path: {save_path}")
             return True
         
         except Exception as e:
             # 最后一次重试失败，记录错误并返回None
             if retry == max_retries:
                 if isinstance(e, requests.exceptions.Timeout):
-                    tlogger().error(f"Download timeout after {max_retries} retries, image_url: {image_url}, save path: {save_path}")
+                    tlogger(task_id).info(f"Download timeout after {max_retries} retries, image_url: {image_url}, save path: {save_path}")
                 elif isinstance(e, requests.exceptions.HTTPError):
-                    tlogger().error(f"Download failed (HTTP error) after {max_retries} retries, image_url: {image_url}, save path: {save_path}, error: {e}")
+                    tlogger(task_id).info(f"Download failed (HTTP error) after {max_retries} retries, image_url: {image_url}, save path: {save_path}, error: {e}")
                 else:
-                    tlogger().error(f"Save image failed after {max_retries} retries, image_url: {image_url}, save path: {save_path}, error: {str(e)}")
+                    tlogger(task_id).info(f"Save image failed after {max_retries} retries, image_url: {image_url}, save path: {save_path}, error: {str(e)}")
                 return False
             # 非最后一次重试，记录警告并延迟重试
             delay = retry_delays[retry]
-            tlogger().warning(f"Attempt {retry + 1} failed, retry after {delay}s. image_url: {image_url}, error: {str(e)}")
+            tlogger(task_id).info(f"Attempt {retry + 1} failed, retry after {delay}s. image_url: {image_url}, error: {str(e)}")
             time.sleep(delay)

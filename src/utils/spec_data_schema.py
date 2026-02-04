@@ -37,7 +37,7 @@ class AgentState(TypedDict):
     figma_title: Optional[str]
     workspace_directory: str
     resource_directory: Optional[str]
-    icon_list: set[str]
+    icon_list: dict[str: str]
     components: list
     comp_knowledges: Dict[str, dict]
     coder_compose_code: str

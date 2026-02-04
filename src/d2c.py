@@ -87,8 +87,8 @@ tools = [llm_tools.export_figma_icon]
 model = init_gemini_chat(streaming=False)
 llm_with_tools = model.bind_tools(tools)
 
-def recognize_icon_block(node_json: dict):
-    tlogger().info("recognize iconblock")
+def recognize_icon_block(node_json: dict, task_id: int = 10000):
+    tlogger(task_id).info("recognize iconblock")
     node_json_str = json.dumps(node_json, indent=4, ensure_ascii=False)
     user_prompt = f"node json is:\n```{node_json_str}\n```"
 
@@ -105,7 +105,7 @@ def recognize_icon_block(node_json: dict):
 def export_icon_block(state: AgentState):
     icons_info = {}
     if "icon_list" not in state:
-        state["icon_list"] = set()
+        state["icon_list"] = dict()
     if "icons_need_to_be_exported" not in state or not state["icons_need_to_be_exported"]:
         tlogger().info("no icons need to be exported in state")
     else:
@@ -114,15 +114,16 @@ def export_icon_block(state: AgentState):
     #Reduce API calls because Figma services number of calls
     main_node_id = state["figma_url"].split("node-id=")[-1].split("&")[0].replace("-", ":")
     icons_info[main_node_id] = f"figma_screenshot_{state['task_id']}"
-    image_info = d2c_utils.get_image_node(state["figma_json"].get("document", {}))
-    icons_info |= image_info
+    image_info = figma_utils.get_image_ref(state["figma_json"].get("document", {}))
     saved_path = llm_tools.export_figma_icon.invoke({
         "figma_nodes": icons_info,
+        "image_refs": image_info,
         "figma_file_key": state["figma_file_key"],
         "figma_token": state["figma_token"],
         "resource_directory": state["resource_directory"]
     })
     if saved_path:
+        saved_path.pop(main_node_id)
         state["icon_list"].update(saved_path)
     tlogger().info(f"icon_list {state['icon_list']}")
     # Clear the list of icons to be exported after processing
@@ -142,11 +143,11 @@ def export_figma_icons(state: AgentState):
     d2c_datautil.update_task_stage(state["task_id"], "export_figma_icons")
     sub_figma = d2c_utils.split_tree(state["figma_json"].get("document", {}))
     max_pool_count = min(len(sub_figma), 20)
-    retry_pool = RetryPool(max_workers=max_pool_count)
+    retry_pool = RetryPool(max_workers=max_pool_count, task_id=state["task_id"])
     future_tasks = []
     for node_id, node_json in sub_figma.items():
         tlogger().info(f"Recognize node {node_id}: type={node_json.get('type')}, name={node_json.get('name')}")
-        future_tasks.append(retry_pool.submit(recognize_icon_block, node_json))
+        future_tasks.append(retry_pool.submit(recognize_icon_block, node_json, task_id=state["task_id"]))
         time.sleep(5)
     for f in future_tasks:
         state["icons_need_to_be_exported"].extend(f.result())
@@ -158,7 +159,7 @@ def export_figma_icons(state: AgentState):
     export_graph = builder_export.compile()
     result = export_graph.invoke(state)
     state.update(result)
-    return {"icon_list": state.get("icon_list", set())}
+    return {"icon_list": state.get("icon_list", dict())}
 
 # Step 4: Export Figma Screenshot
 def export_figma_screenshot(state: AgentState):
@@ -281,18 +282,21 @@ def coder(state: AgentState):
     """
     tlogger().info("--- CODING ---")
     d2c_datautil.update_task_stage(state["task_id"], "coder")
-    icon_list = set()
+    icon_list = dict()
     if "icon_list" in state and state["icon_list"]:
         icon_list = state["icon_list"]
     coder_tree = dsl_utils.build_dsl_tree(state["figma_json"].get("document", {}))
     sub_figma_list = figma_utils.split_figma_json_size(state["figma_json"].get("document", {}))
-    max_pool = min(len(sub_figma_list), 20)
-    retry_pool = RetryPool(max_workers=max_pool, max_retry=5)
+    max_pool = min(len(sub_figma_list), 60)
+    retry_pool = RetryPool(max_workers=max_pool, max_retry=5, task_id=state["task_id"])
     coder_task_list = {}
     workspace_dir = state["workspace_directory"]
     os.makedirs(f"{workspace_dir}/sub_figma", exist_ok=True)
     for figma_id, sub_figma_json in sub_figma_list.items():
-        fut = retry_pool.submit(coder_utils.sub_figma_2_coder, sub_figma_json, icon_list)
+        sub_figma_icons = figma_utils.sub_figma_used_icons(state["figma_json"].get("document", {}),
+                                                           sub_figma_json, icon_list)
+        fut = retry_pool.submit(coder_utils.sub_figma_2_coder, sub_figma_json, sub_figma_icons,
+                                task_id=state["task_id"])
         coder_task_list[fut] = figma_id
         time.sleep(5)
         with open(os.path.join(workspace_dir, f"sub_figma/{figma_id}.json"), "w", encoding="utf-8") as f:
@@ -323,7 +327,7 @@ def merge_coder(state: AgentState):
     exported_icons_prompt = ""
     if "icon_list" in state and state["icon_list"]:
         exported_icons_prompt += "The resource files in the app/src/main/res/drawable-xxhdpi directory are:\n"
-        for icon in state["icon_list"]:
+        for icon in state["icon_list"].values():
             exported_icons_prompt += f"- {icon}\n"
         user_prompt += "\n# Icon List\n" + exported_icons_prompt
     tlogger().info("merge code start")
@@ -354,6 +358,7 @@ def merge_coder(state: AgentState):
         f.write(generated_compose_code)
     return {"coder_compose_code": generated_compose_code, "latest_compose_code": generated_compose_code, "merge_success": True, "current_node_name": "merge_coder"}
 
+@log_duration
 def bugfix(state: AgentState):
     """
     Fix compose ui code.
@@ -452,7 +457,7 @@ def remove_useless_icons(state: AgentState):
     d2c_datautil.update_task_stage(state["task_id"], "remove_useless_icons")
     compose_code = llm_tools.read_file.invoke({"abs_path": os.path.join(state["workspace_directory"], "app/src/main/java/com/example/myapplication/Greeting.kt")})
     used_icons = d2c_utils.find_used_icons(compose_code)
-    d2c_utils.remove_useless_icon_files(state["icon_list"], used_icons, state["workspace_directory"])
+    d2c_utils.remove_useless_icon_files(state["icon_list"].values(), used_icons, state["workspace_directory"])
     return {"latest_compose_code": compose_code, "current_node_name": "remove_useless_icons"}
 
 # step 11: evaluator
