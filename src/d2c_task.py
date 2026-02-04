@@ -40,7 +40,7 @@ def d2c_exec_task(task_id: str, figma_url: str, figma_token: str):
                          f"git user name: {git_user_info['user_name']},"
                          f"Git user email: {git_user_info['user_email']}")
         state = {
-            "task_id": str(task_id),
+            "task_id": task_id,
             "figma_url": figma_url,
             "figma_token": figma_token
         }
@@ -85,7 +85,7 @@ def create_task(figma_url: str, figma_token: str, app_name: str) -> Tuple[str, D
     running_task_count = d2c_datautil.count_app_running_task(app_name)
     if running_task_count >= d2c_config.MaxUserRunningTask:
         return {
-            "task_id": task_id,
+            "task_id": str(task_id),
             "status": d2c_config.TaskStatus.CreateFail,
             "msg": d2c_msg.D2C_CREATE_MAXIMUM_MSG
         }
