@@ -50,7 +50,7 @@ def export_figma_json(state: AgentState):
     if not figma_json:
         tlogger().info("parse figma file failed")
         raise ValueError("parse figma file failed")
-    return {"figma_json": figma_json, "figma_file_key": figma_file_key, "figma_title": figma_title}
+    return {"figma_json": figma_json, "figma_file_key": figma_file_key, "figma_title": figma_title, "root_node_id": node_id}
 
 # Step 2: Initialize Container
 def init_container(state: AgentState):
@@ -109,11 +109,12 @@ def export_icon_block(state: AgentState):
     #Reduce API calls because Figma services number of calls
     main_node_id = state["figma_url"].split("node-id=")[-1].split("&")[0].replace("-", ":")
     icons_info[main_node_id] = f"figma_screenshot_{state['task_id']}"
-    image_info = d2c_utils.get_image_node(state["figma_json"].get("document", {}))
-    icons_info |= image_info
+    image_info = d2c_utils.get_image_ref(state["figma_json"].get("document", {}))
     saved_path = llm_tools.export_figma_icon.invoke({
         "figma_nodes": icons_info,
+        "image_refs": image_info,
         "figma_file_key": state["figma_file_key"],
+        "root_node_id": state["root_node_id"],
         "figma_token": state["figma_token"],
         "resource_directory": state["resource_directory"]
     })
@@ -494,14 +495,16 @@ def compress_upload(state: AgentState):
     # generate random 5 digits
     task_id = state["task_id"]
     figma_title = state["figma_title"]
+    r_node_id = state["root_node_id"]
+    target_name = f"{figma_title}_{r_node_id}_{task_id}"
     logfile = os.path.join(compress_dir, f"{task_id}.log")
     if os.path.isfile(logfile):            # 只移动文件
         shutil.copy(logfile, workspace_dir)   
     try:
-        subprocess.run(["zip", "-r", f"{figma_title}_{task_id}.zip", f"{task_id}"], cwd=compress_dir, check=True, capture_output=True, text=True)
+        subprocess.run(["zip", "-r", f"{target_name}.zip", f"{task_id}"], cwd=compress_dir, check=True, capture_output=True, text=True)
         """ add upload to url here. """
-        output_zip_file_path = os.path.join(compress_dir, f"{figma_title}_{task_id}.zip")
-        output_folder_path = os.path.join(compress_dir, f"{figma_title}_{task_id}")
+        output_zip_file_path = os.path.join(compress_dir, f"{target_name}.zip")
+        output_folder_path = os.path.join(compress_dir, f"{target_name}")
         os.rename(state["workspace_directory"], f"{output_folder_path}")
         d2c_datautil.set_task_output(task_id, state["latest_compose_code"])
         tlogger().info(f"latest_compose_code: \n{state['latest_compose_code']}")
