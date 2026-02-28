@@ -4,6 +4,7 @@ import os
 import threading
 import functools
 import d2c_config
+import time
 
 # 初始化线程本地存储（每个线程独立的数据空间）
 task_context = threading.local()
@@ -12,7 +13,7 @@ def get_task_logger(task_id: int) -> logging.Logger:
     """为特定任务创建或获取日志记录器"""
     logger = logging.getLogger(f"task_{task_id}")
     task_context.logger = logger
-
+    task_context.task_id = task_id
     # 避免重复添加处理器
     if logger.handlers:
         return logger
@@ -41,16 +42,25 @@ def clean_threading_context():
     if hasattr(task_context, "logger"):
         del task_context.logger
 
-def tlogger() -> logging.Logger:
+def tlogger(task_id=10000) -> logging.Logger:
     """从线程本地存储获取当前任务的日志器（全局可用）"""
     try:
         if not hasattr(task_context, "logger"):
-            task_context.logger = get_task_logger(10000)
+            task_context.logger = get_task_logger(task_id)
         # 从线程本地存储中获取日志器
         return task_context.logger
     except AttributeError:
         raise RuntimeError("No logger found in current context. Ensure task is initialized.")
     
+def logger_task_id() -> logging.Logger:
+    """从线程本地存储获取当前任务的日志器（全局可用）"""
+    try:
+        if not hasattr(task_context, "logger"):
+            return 10000
+        # 从线程本地存储中获取日志器
+        return task_context.task_id
+    except AttributeError:
+        raise RuntimeError("No logger found in current context. Ensure task is initialized.")
 
 def log_duration(func):
     @functools.wraps(func)
@@ -58,6 +68,6 @@ def log_duration(func):
         start = time.perf_counter()
         result = func(*args, **kwargs)
         elapsed = time.perf_counter() - start
-        tlogger().info(f"{func.__name__} 耗时: {elapsed:.3f}s")
+        tlogger().info(f"{func.__name__} stage 耗时: {elapsed:.3f}s")
         return result
     return wrapper
