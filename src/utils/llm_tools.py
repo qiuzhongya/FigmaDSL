@@ -5,8 +5,8 @@ import base64
 import os
 import shutil
 import base64
-from typing import Dict, Set, Any
-from d2c_logger import tlogger
+from typing import Dict, Set
+from d2c_logger import tlogger, logger_task_id
 from utils.spec_tool_utils import fetch_image_links, fetch_ref_image_links, get_safe_filename, get_unique_path, download_and_save_icon
 from utils.retry_pool_tools import RetryPool
 
@@ -50,7 +50,7 @@ def export_figma_icon(figma_nodes: Dict[str, str], image_refs: Set[str],
         download_tasks[image_ref_url] = save_path
     
     max_download_workers = min(5, len(download_tasks))  # 控制并发数，避免触发Figma API限流
-    retry_pool = RetryPool(max_workers=max_download_workers)
+    retry_pool = RetryPool(max_workers=max_download_workers, task_id=logger_task_id())
     future_download_task = {}
     for image_url, save_image_path in download_tasks.items():
         download_task = retry_pool.submit(download_and_save_icon, save_image_path, image_url)
