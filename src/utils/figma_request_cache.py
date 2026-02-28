@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Set
 from d2c_logger import tlogger
 
 cache_dir = "/tmp/d2c_json_cache"
@@ -39,30 +39,43 @@ def write_json_cache(file_key: str, node_id: str, data: Dict[str, Any]) -> None:
 
 
 # ------------- 缓存工具 -------------
-def image_json_cache_path(file_key: str) -> str:
-    return f"{cache_dir}/{file_key}_image_link_cache.json"
+def image_json_cache_path(file_key: str, root_node_id: str) -> str:
+    return f"{cache_dir}/{file_key}_image_link_cache_{root_node_id}.json"
 
 
-def read_image_json_cache(file_key: str,
-                          needed_nodes: List[str]) -> Optional[Dict[str, str]]:
-    """返回 images 字段 dict；缓存必须包含所有 needed_nodes 才算命中"""
-    path = image_json_cache_path(file_key)
+def read_image_json_cache(file_key: str, root_node_id: str,
+                          needed_nodes: Set[str]) -> Optional[Dict[str, str]]:
+    """
+    返回 needed_nodes 对应的 images 字段 dict；缓存必须包含所有 needed_nodes 且值不为 null 才算命中
+    """
+    path = image_json_cache_path(file_key, root_node_id)
     if not os.path.isfile(path):
+        tlogger().info(f"link cache file {path} for figma not exist")
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             images: Dict[str, str] = json.load(f).get("images", {})
-        if all(n in images for n in needed_nodes):
-            tlogger().info(f"read image download link cache for figma key {file_key}")
-            return images
+
+        # 只提取 needed_nodes 中值不为 null 的条目
+        result = {}
+        for n in needed_nodes:
+            if n not in images:
+                tlogger().info(f"link cache not find key {n} for figma not exist")
+                return None  # 缺少某个节点，缓存未命中
+            if images[n] is None:
+                tlogger().info(f"link cache not find key {n} for figma is None")
+                return None  # 值为 null，缓存未命中
+            result[n] = images[n]
+        tlogger().info(f"read image download link cache for figma key {file_key}, nodes: {len(result)}")
+        return result
     except Exception:
         pass
     return None
 
 
-def write_image_json_cache(file_key: str, new_images: Dict[str, str]) -> None:
+def write_image_json_cache(file_key: str, root_node_id: str, new_images: Dict[str, str]) -> None:
     """增量合并并落盘；失败不抛"""
-    path = image_json_cache_path(file_key)
+    path = image_json_cache_path(file_key, root_node_id)
     try:
         # 读旧缓存
         old = {}
