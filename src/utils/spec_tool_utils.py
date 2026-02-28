@@ -6,16 +6,17 @@ import re
 import time
 import d2c_config
 from d2c_logger import tlogger
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Set
 from utils.figma_request_cache import read_json_cache, write_json_cache, read_image_json_cache, write_image_json_cache
 from copy import deepcopy
 
 
 def fetch_image_links(file_key: str,
                       node_ids: List[str],
-                      token: str) -> Dict[str, str]:
+                      token: str, 
+                      root_node_id: str) -> Dict[str, str]:
     if d2c_config.FIGMA_REQUEST_CACHE:
-        cached = read_image_json_cache(file_key, node_ids)
+        cached = read_image_json_cache(file_key, root_node_id, node_ids)
         if cached is not None:
            return cached
     url = f"https://api.figma.com/v1/images/{file_key}"
@@ -32,9 +33,47 @@ def fetch_image_links(file_key: str,
         return {}
     images: Dict[str, str] = resp.json().get("images", {})
     if d2c_config.FIGMA_REQUEST_CACHE:
-        write_image_json_cache(file_key, images)
+        write_image_json_cache(file_key, root_node_id, images)
     return images
 
+
+def fetch_ref_image_links(file_key: str,
+                          image_refs: Set[str],
+                          token: str,
+                          root_node_id: str) -> Dict[str, str]:
+    if d2c_config.FIGMA_REQUEST_CACHE:
+        cached = read_image_json_cache(file_key, root_node_id, image_refs)
+        read_image_json_cache
+        if cached is not None:
+           return cached
+    url = f"https://api.figma.com/v1/files/{file_key}/images"
+    headers = {"X-Figma-Token": token}
+    resp = requests.get(url, headers=headers, timeout=30)
+    if resp.status_code == 429:
+        retry_after = int(resp.headers.get("Retry-After", 60))
+        tlogger().error(f"Rate limited (429) -> retry_after={retry_after}")
+        raise Exception(f"Figma API rate limited (429) -> retry_after={retry_after}")
+    if resp.status_code != 200:
+        tlogger().info(f"Get ref image urls failed, code={resp.status_code}, text={resp.text}")
+        return {}
+    resp.raise_for_status()
+    all_images: Dict[str, str] = resp.json().get("meta", {}).get("images", {})
+    if not all_images:
+            tlogger().info("未找到任何图片")
+            return {}
+    tlogger().info(f"找到 {len(all_images)} 个图片资源")
+    if d2c_config.FIGMA_REQUEST_CACHE:
+        write_image_json_cache(file_key, root_node_id, all_images)
+    filtered_images = {
+        ref: url for ref, url in all_images.items() 
+        if ref in image_refs
+    }
+    missing_refs = set(image_refs) - set(filtered_images.keys())
+    if missing_refs:
+        tlogger().info(f"以下 image_refs 未找到: {missing_refs}")
+    else:
+        tlogger().info(f"以下 image_refs 找到: {filtered_images}")
+    return filtered_images
 
 def parse_figma_file(node_id: str, figma_token: str, figma_file_key: str):
     if d2c_config.FIGMA_REQUEST_CACHE:
@@ -70,12 +109,12 @@ def read_figma_json(figma_json: dict) -> list[dict]:
         raise Exception("no children found")
     return document["children"] # [1:], double check from the first or second child
 
-def get_image_node(figma_json: dict) -> dict:
-    refs = {}
+def get_image_ref(figma_json: dict) -> set:
+    refs = set()
     def walk(node):
         for fill in node.get("fills", []):
             if fill.get("type") == "IMAGE" and "imageRef" in fill:
-                refs[node["id"]] = f"img_{fill['imageRef']}"
+                refs.add(fill['imageRef'])
                 break
         for child in node.get("children", []):
             walk(child)
@@ -192,6 +231,9 @@ def purge_figma(figma_json: Any) -> Any:
         if node.get('visible') is False:
             clear_list.append(node.get("id"))
             tlogger().info(f"remove invisible node: {node.get('id')}")
+        if node.get('opacity') and node.get('opacity') < 0.01:
+            clear_list.append(node.get("id"))
+            tlogger().info(f"remove opacity node: {node.get('opacity')}")
         abb = node.get("absoluteBoundingBox", {})
         if abb:
             if abb.get("width") == 0 or abb.get("height") == 0:

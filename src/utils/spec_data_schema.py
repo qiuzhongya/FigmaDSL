@@ -35,6 +35,7 @@ class AgentState(TypedDict):
     figma_token: str
     figma_json: dict = Field(default_factory=dict, description="figma json")
     figma_title: Optional[str]
+    root_node_id: Optional[str]
     workspace_directory: str
     resource_directory: Optional[str]
     icon_list: set[str]

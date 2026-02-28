@@ -5,14 +5,14 @@ import base64
 import os
 import shutil
 import base64
-from typing import Dict, Type, Any
+from typing import Dict, Set, Any
 from d2c_logger import tlogger
-from utils.spec_tool_utils import fetch_image_links, get_safe_filename, get_unique_path, download_and_save_icon
+from utils.spec_tool_utils import fetch_image_links, fetch_ref_image_links, get_safe_filename, get_unique_path, download_and_save_icon
 from utils.retry_pool_tools import RetryPool
 
 @tool
-def export_figma_icon(figma_nodes: Dict[str, str],
-                      figma_file_key: str, figma_token: str, resource_directory: str) -> set:
+def export_figma_icon(figma_nodes: Dict[str, str], image_refs: Set[str],
+                      figma_file_key: str, root_node_id: str, figma_token: str, resource_directory: str) -> set:
     """通过 Figma API 导出 icon png 资源"""
 
     # todo: 优化，加速，每个 figma 文件只导出一次
@@ -21,8 +21,11 @@ def export_figma_icon(figma_nodes: Dict[str, str],
     tlogger().info(f"export figma icons:f{figma_nodes.values()} ")
     # 1. 获取图片下载链接
     figma_node_ids = figma_nodes.keys()
-    image_links_map = fetch_image_links(figma_file_key, figma_node_ids, figma_token) 
-    
+    tlogger().info(f"Get icon url")
+    image_links_map = fetch_image_links(figma_file_key, figma_node_ids, figma_token, root_node_id)
+    tlogger().info(f"Get icon url")
+    ref_image_links_map = fetch_ref_image_links(figma_file_key, image_refs, figma_token, root_node_id)
+
     download_tasks = {}
     saved_paths = set() 
     for figma_node_id in figma_nodes.keys():
@@ -37,6 +40,14 @@ def export_figma_icon(figma_nodes: Dict[str, str],
         saved_paths.add(f"app/src/main/res/drawable-xxhdpi/{filepath}")
         download_tasks[image_url] = save_path
 
+    for image_ref_id, image_ref_url in ref_image_links_map.items():
+        if not image_ref_url:
+            tlogger().info(f"Get ref image url failed, node id: {image_ref_id}")
+            continue
+        image_file_name = f"img_{image_ref_id}.png"
+        save_path = os.path.join(resource_directory, image_file_name)
+        saved_paths.add(f"app/src/main/res/drawable-xxhdpi/{image_file_name}")
+        download_tasks[image_ref_url] = save_path
     
     max_download_workers = min(5, len(download_tasks))  # 控制并发数，避免触发Figma API限流
     retry_pool = RetryPool(max_workers=max_download_workers)
@@ -50,7 +61,7 @@ def export_figma_icon(figma_nodes: Dict[str, str],
             download_image_url = future_download_task[future_task][0]
             save_local_path = future_download_task[future_task][1]
             tlogger().info(f"down load from: {download_image_url}, save in: {save_local_path} failed")
-    tlogger().info(f"down load icon over!!!")
+    tlogger().info(f"down load all image over!!!")
     return saved_paths
 
 
