@@ -1,9 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, Future
-from functools import partial
 import time
-import logging
+from d2c_logger import tlogger
 
-logger = logging.getLogger("RetryPool")
 
 class RetryPool:
     """
@@ -13,10 +11,11 @@ class RetryPool:
     :param retry_delay:  每次重试间隔(秒)
     """
 
-    def __init__(self, max_workers: int = 6, max_retry: int = 3, retry_delay: float = 1.0):
+    def __init__(self, max_workers: int = 6, max_retry: int = 3, retry_delay: float = 1.0, task_id: int = 10000):
         self._pool   = ThreadPoolExecutor(max_workers=max_workers)
         self._max_r  = max_retry
         self._delay  = retry_delay
+        self._task_id = task_id
 
     # ---------- 公共 API ----------
     def submit(self, fn, /, *args, **kwargs) -> Future:
@@ -48,7 +47,7 @@ class RetryPool:
                 future.set_result(result)
                 return
             except Exception as e:
-                logger.warning(f"任务异常 {attempt}/{self._max_r}：{e}")
+                tlogger(self._task_id).info(f"任务异常 {attempt}/{self._max_r}: {e}")
                 if attempt == self._max_r:
                     # 已达重试上限，把异常抛给 Future
                     future.set_exception(e)
