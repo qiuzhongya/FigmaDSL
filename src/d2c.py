@@ -11,7 +11,7 @@ from langgraph.graph import StateGraph, START, END
 import time
 from langgraph.prebuilt import create_react_agent
 from llm import init_gemini_chat
-from d2c_logger import tlogger
+from d2c_logger import tlogger, log_duration
 from utils.tos_manager import upload_zip_to_tos
 import d2c_datautil
 import d2c_config
@@ -53,6 +53,7 @@ def export_figma_json(state: AgentState):
     return {"figma_json": figma_json, "figma_file_key": figma_file_key, "figma_title": figma_title, "root_node_id": node_id}
 
 # Step 2: Initialize Container
+@log_duration
 def init_container(state: AgentState):
     """
     Initializes the container environment.
@@ -127,6 +128,7 @@ def export_icon_block(state: AgentState):
 
 
 # Step 3: Export Figma Icons
+@log_duration
 def export_figma_icons(state: AgentState):
     """
     Exports figma icons.
@@ -136,7 +138,7 @@ def export_figma_icons(state: AgentState):
         state["icons_need_to_be_exported"] = []
     d2c_datautil.update_task_stage(state["task_id"], "export_figma_icons")
     sub_figma = d2c_utils.split_tree(state["figma_json"].get("document", {}))
-    retry_pool = state.get("retry_pool", RetryPool())
+    retry_pool = state.get("retry_pool", RetryPool(task_id=state["task_id"]))
     future_tasks = []
     for node_id, node_json in sub_figma.items():
         tlogger().info(f"Recognize node {node_id}: type={node_json.get('type')}, name={node_json.get('name')}")
@@ -267,6 +269,7 @@ def get_component_knowledges(state: AgentState):
     return {"comp_knowledges": comp_knowledges}
 
 # Step 7: Coder
+@log_duration
 def coder(state: AgentState):
     """
     Generates or fixes compose ui code.
@@ -316,7 +319,7 @@ def coder(state: AgentState):
         f.write(generated_compose_code)
     return {"coder_compose_code": generated_compose_code, "latest_compose_code": generated_compose_code, "current_node_name": "coder"}
 
-
+@log_duration
 def bugfix(state: AgentState):
     """
     Fix compose ui code.
@@ -349,6 +352,7 @@ def bugfix(state: AgentState):
     return {"current_node_name": "bugfix"}
 
 # Step 8: Replace Tester
+@log_duration
 def replace_tester(state: AgentState):
     """
     Replace the tester file with the generated code.
@@ -385,6 +389,7 @@ You can use the following tools:
     return {}
 
 # Step 9: Compiler
+@log_duration
 def compiler(state: AgentState):
     """
     Compile the compose ui code and checks for errors.
@@ -397,6 +402,7 @@ def compiler(state: AgentState):
 
 
 # Step 10: Previewer
+@log_duration
 def previewer(state: AgentState):
     """
     Preview the compose ui code and checks for errors.
